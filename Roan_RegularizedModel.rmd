@@ -1,0 +1,327 @@
+---
+title: "Module 12 Lab"
+author: "Roan Zappanti"
+output: html_notebook
+---
+
+<br><br>
+```{r}
+### Lab Sections {.tabset .tabset-pills}
+```
+
+#### Part One: Tuning Regularized Regression
+
+Managing global settings:
+```{r Global-Setup, setup, include = TRUE}
+knitr::opts_chunk$set(
+  fig.width = 6, fig.height = 6,
+  warning = FALSE, error = FALSE, message = FALSE,
+  include = TRUE, echo = TRUE, strip.white = TRUE, highlight = TRUE,
+  results = 'hold'
+)
+```
+
+
+Loading Data:
+```{r Libraries-and-Data}
+library(tidymodels)
+library(tidyverse)
+library(vip)
+
+path <- here::here("Data","boston.csv")
+boston <- read_csv(path)
+```
+
+---
+
+<br>
+1. Split the data into a training set and test set using a 70-30% split. Be sure to include the
+set.seed(123) so that your train and test sets are the same size as mine.
+
+2. Create a recipe that will model cmedv as a function of all
+predictor variables. Apply the following feature engineering steps
+in this order:
+
+    a. Normalize all numeric predictor variables using a Yeo-Johnson
+    transformation
+    b. Standardize all numeric predictor variables
+
+3. Create a 5-fold cross validation resampling object.
+
+4. Create a regularized regression model object that:
+
+    a. Contains tuning placeholders for the mixture and penalty
+      arguments
+    b. Sets the engine to use the glmnet package.
+
+5. Create our hyperparameter search grid that:
+    
+    a. Searches across default values for mixture
+    b. Searches across values ranging from -10 to 5 for penalty
+    c. Will search across 10 values for each of these
+    hyperparameters   (levels)\n
+
+6. Creates a workflow object that combines our recipe object with 
+our model object.
+
+7. Performs a hyperparameter search.
+
+8. Assesses the results.
+
+
+```{r , message = FALSE}
+# Step 1. split our data
+set.seed(123)
+split <- initial_split(boston, prop = 0.7, strata = cmedv)
+boston_train <- training(split)
+boston_test <- testing(split)
+
+boston_recipe <- recipe(cmedv ~ ., data = boston_train) %>%
+step_YeoJohnson(all_numeric_predictors()) %>%
+step_normalize(all_numeric_predictors())
+
+# Step 3. create resampling object
+set.seed(123)
+kfolds <- vfold_cv(boston, v = 5, strata = cmedv)
+
+# Step 4. create our model object
+reg_mod <- linear_reg(mixture = tune(), penalty = tune()) %>%
+set_engine("glmnet")
+
+# Step 5. create our hyperparameter search grid
+reg_grid <- grid_regular(mixture(), penalty(range = c(-10, 5)), levels = 10)
+
+# Step 6. create our workflow object
+boston_wf <- workflow() %>%
+add_recipe(boston_recipe) %>%
+add_model(reg_mod)
+
+# Step 7. perform hyperparamter search
+tuning_results <- boston_wf %>%
+tune_grid(resamples = kfolds, grid = reg_grid)
+
+# Step 8. assess results
+tuning_results %>%
+collect_metrics() %>%
+filter(.metric == "rmse") %>%
+arrange(mean)
+
+autoplot(tuning_results)
+```
+Assess this plot regarding our hyperparameter search results. What do the results tell you? Does the amount of regularization (size of the penalty) have a larger influence on the RMSE or does the type of penalty applied (mixture) have a larger influence?
+<br><br>
+**Answer**: While the mixture has a slight effect on RMSE, penalty size maintains a far larger effect on RMSE. 
+
+---
+Now, fill in the blanks below to:
+
+1. finalize our workflow object with the optimal hyperparameter values
+2. fit our final workflow object across the full training set data, and
+3. plot the top 10 most influential features.
+
+```{r}
+# Step 1. finalize our workflow object with the optimal hyperparameter values
+best_hyperparameters <- select_best(tuning_results, metric = "rmse")
+
+final_wf <- workflow() %>%
+add_recipe(boston_recipe) %>%
+add_model(reg_mod) %>%
+finalize_workflow(best_hyperparameters)
+
+# Step 2. fit our final workflow object across the full training set data
+final_fit <- final_wf %>%
+fit(data = boston_train)
+
+# Step 3. plot the top 10 most influential features
+final_fit %>%
+extract_fit_parsnip() %>%
+vip()
+```
+We see that lstat is the most influential predictor variable followed by dis and rm.
+
+#### Part 2: Tuning a Regularized Classification Model
+
+Your objective is to tune a regularized logistic regression model to find the hyperparameter values that
+maximize the AUC model metric. Using the code chunk below, fill in the blanks to:
+
+1. Split the data into a training set and test set using a 70-30% split. Be sure to include the set.seed(123) so that your train and test sets are the same size as mine.
+
+2. Create a recipe that will model type as a function of all predictor variables. Apply the following feature engineering steps in this order:
+   
+    a. Normalize all numeric predictor variables using a
+    Yeo-Johnson transformation
+    b. Standardize all numeric predictor variables
+
+3. Create a 5-fold cross validation resampling object.
+
+4. Create a regularized logistic regression model object that:
+    
+    a. Contains tuning placeholders for the mixture and penalty
+    arguments
+    b. Sets the engine to use the glmnet package.
+    c. Sets the mode to be a classification model.
+
+5. Create our hyperparameter search grid that:
+    
+    a. Searches across default values for mixture
+    b. Searches across values ranging from -10 to 5 for penalty
+    c. Will search across 10 values for each of these
+    hyperparameters (levels)
+
+6. Creates a workflow object that combines our recipe object with our model object.
+
+7. Performs a hyperparameter search.
+
+8. Assesses the results.
+```{r Gathering-Data}
+# install.packages("kernlab") if you don't have this package installed
+library(kernlab)
+data(spam)
+
+# Splitting the data
+set.seed(123)
+split <- initial_split(data = spam, prop = 0.7, strata = type)
+spam_train <- training(split)
+spam_test <- testing(split)
+
+# Spam recipe
+spam_recipe <- recipe(type ~ ., data = spam_train) %>% 
+  step_YeoJohnson(all_numeric_predictors()) %>% 
+  step_normalize(all_numeric_predictors())
+
+# Creating CV object
+set.seed(123)
+kfolds <- vfold_cv(data = spam_train, v = 5, strata = type)
+
+# Creating regularized logistic regression model with tuning params
+logit_mod <- logistic_reg(mode = "classification", 
+                          penalty = tune(),
+                          mixture = tune(),
+                          engine = "glmnet")
+
+# Hyperparameter grid search for penalty and mixture
+logit_grid <- grid_regular( mixture(), 
+                           penalty(range = c(-10, 5)),
+                           levels = 10)
+
+# Create workflow and tune the parameters
+spam_wf <- workflow() %>% 
+  add_recipe(spam_recipe) %>% 
+  add_model(logit_mod)
+
+tuning_results <- spam_wf %>% 
+  tune_grid(resamples = kfolds, grid = logit_grid)
+
+tuning_results %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>%
+  arrange(desc(mean))
+
+#Plotting the results
+autoplot(tuning_results)
+
+```
+Based on the graphed results of the grid search for the "penalty" and "mixture" parameters, the penalty size plays a greater role on the Area Under the Curve. All proportions of ridge vs lasso lead to a lower ROC after hitting a penalty size of ~ 0.0.
+
+Now, fill in the blanks below to:
+
+  1. finalize our workflow object with the optimal hyperparameter values,
+  2. fit our final workflow object across the full training set data, and
+  3. plot the top 10 most influential features.
+```{r}
+
+# Step 1. finalize our workflow object with the optimal hyperparameter values
+best_hyperparameters <- select_best(tuning_results, metric = "roc_auc")
+
+final_wf <- workflow() %>%
+add_recipe(spam_recipe) %>%
+add_model(logit_mod) %>%
+finalize_workflow(best_hyperparameters)
+
+# Step 2. fit our final workflow object across the full training set data
+final_fit <- final_wf %>%
+fit(data = spam_train)
+
+# Step 3. plot the top 10 most influential features
+final_fit %>%
+extract_fit_parsnip() %>%
+vip()
+```
+#### Part 3: Tuning a MARS Model
+
+For this part of the lab we’ll continue using the kernlab::spam data set. Your objective is to tune a MARS classification model to find the hyperparameter values that maximize the AUC model metric. Using the code chunk below, fill in the blanks to:
+
+1. Split the data into a training set and test set using a 70-30% split. Be sure to include the
+  set.seed(123) so that your train and test sets are the same size as mine.
+  
+2. Create a recipe that will model type as a function of all predictor variables. Apply the following
+  feature engineering steps in this order:
+    
+    a. Normalize all numeric predictor variables using a Yeo-Johnson transformation
+    b. Standardize all numeric predictor variables
+
+3. Create a 5-fold cross validation resampling object.
+
+4. Create a MARS model object that:
+    
+    a. Contains tuning placeholders for the num_terms and prod_degree arguments
+    b. Sets the mode to be a classification model.
+
+5. Create our hyperparameter search grid that:
+    
+    a. Searches across values ranging from 1 to 30 for num_terms
+    b. Searches across default values for prod_degree
+    c. Will search across 25 values for each of these hyperparameters (levels)
+
+6. Creates a workflow object that combines our recipe object with our model object.
+
+7. Performs a hyperparameter search.
+
+8. Assesses the results.
+
+```{r}
+
+# Step 4: create ridge model object
+mars_mod <- mars(num_terms = tune(), prod_degree = tune()) %>%
+set_mode("classification")
+
+# Step 5. create our hyperparameter search grid
+mars_grid <- grid_regular(num_terms(range = c(1,30)), prod_degree(), levels = 25)
+
+# Step 6: create workflow object to combine the recipe & model
+spam_wf <- workflow() %>%
+add_recipe(spam_recipe) %>%
+add_model(mars_mod)
+
+# Step 7. perform hyperparamter search
+tuning_results <- spam_wf %>%
+tune_grid(resamples = kfolds, grid = mars_grid)
+
+# Step 8. assess results
+tuning_results %>%
+collect_metrics() %>%
+filter(.metric == "roc_auc") %>%
+arrange(desc(mean))
+
+autoplot(tuning_results)
+```
+Based on the graphs above, number of model terms (with a platuau around n=10) has a higher affect on roc_auc than the degree of interaction. 
+
+```{r}
+# Step 1. finalize our workflow object with the optimal hyperparameter values
+best_hyperparameters <- select_best(tuning_results, metric = "roc_auc")
+
+final_wf <- workflow() %>%
+add_recipe(spam_recipe) %>%
+add_model(mars_mod) %>%
+finalize_workflow(best_hyperparameters)
+
+# Step 2. fit our final workflow object across the full training set data
+final_fit <- final_wf %>%
+fit(data = spam_train)
+
+# Step 3. plot the top 10 most influential features
+final_fit %>%
+extract_fit_parsnip() %>%
+vip()
+```

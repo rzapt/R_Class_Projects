@@ -1,0 +1,201 @@
+---
+title: "Group 11 Project"
+date: ' `r Sys.Date()`'
+output:
+  html_document:
+    df_print: paged
+---
+Campaign Proposal <br>
+Class: Data Mining (4080-001) <br>
+Authors: An Nguyen, Avneet Dharni, Katie Dang, Roan Zappanti, Tatum Arey 
+<br><br>
+  
+## Business Objective
+
+Evaluate success factors and areas for growth for Campaign A, B, and C
+
+* Who are we serving?
+* What are we serving?
+* Where should we serve it?
+
+## Load the Packages & Get Data
+```{r Loading Packages & Data}
+library(tidyverse)
+library(lubridate)
+library(completejourney)
+library(RColorBrewer)
+library(dplyr)
+
+
+c(promotions, transactions) %<-% get_data(which = 'both', verbose = FALSE)
+```
+
+## Initial Observations
+
+We observed that Campaign A is leading the pack in sales. Both Campaign's B & C have room for improvement however especially C. For the majority of our analysis, we will hone in on understanding the attributes of a successful campaign to boost sales of future ones.
+
+
+```{r Total Sales}
+df2 <- df %>%
+  group_by(campaign_type) %>%
+  summarise(total_sales_campaign_type = sum(sales_value, na.rm = TRUE))
+
+df2 %>% 
+  ggplot(aes(x= campaign_type, y= total_sales_campaign_type, fill= campaign_type))+
+  geom_bar(stat = "identity", show.legend = FALSE)+
+  scale_fill_brewer(palette = "Oranges")+
+  scale_y_continuous( name = "Sales Value of each Campaign Type", labels = scales::dollar)+
+  scale_x_discrete(name= "Campaign Type")+
+  labs( title = "Total Sales Value of Each Campaign Type",
+       caption = "http://https://github.com/bradleyboehmke/completejourney")
+```
+
+
+
+
+#### Observation 1: Who are we serving?
+
+Income is a large deciding factor for each campaign's success. The *50-74K income range* has the most counts of sales for each campaign type. We recommend that Regork continues to serve this demographic, while also innovating solutions to reach those missed markets.
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+
+demographics %>%
+  inner_join(transactions) %>%
+  inner_join(campaigns) %>%
+  inner_join(campaign_descriptions) %>%
+  filter(campaign_type %in% c("Type B", "Type C")) %>%
+  group_by(campaign_type) %>%
+  count(income, campaign_type) %>%
+  mutate(pct = n/sum(n)) %>%
+  ggplot(aes(reorder(income,n), y = n, fill = campaign_type)) +
+    geom_bar(stat = "identity") +
+    theme(axis.title.y = element_blank()) +
+    theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.caption = element_text(size = 8, margin = margin(t = 10), color = "grey70", hjust = 0)) +
+    scale_fill_brewer(palette = "Oranges") +
+    geom_text(aes(label = round(pct, 2)), hjust = -0.1, position = position_stack(vjust = 0.01),
+                     color = "black", check_overlap = TRUE) +
+    scale_y_continuous(labels = scales::number) +
+    coord_flip() +
+  labs(
+    title = "Income Distribution Among Campaign B & C",
+    x = "Income range",
+    y = "Count",
+    caption = "Source: R data package that provides access to data in the Complete Journey package \n provided by 84.51",
+    fill = "Campaign type")
+```
+
+
+<br>
+
+## Observation 2: What are we serving?
+
+As we originally stated, Campaign's A & B were shown to yield the highest sales value. Could what we are serving effect that? It appears that A & B offer almost *double* the amount of products as C. We recommend that we increase the number of products offered in each campaign for a wider reach to consumers.
+
+```{r}
+df <-transactions %>%
+  left_join(products) %>%
+  left_join(demographics) %>%
+  full_join(campaigns) %>%
+  full_join(campaign_descriptions)
+
+  
+# This graph show how many products is applied for each type of campaign
+#This is the reason why campaign A has the most sales value 
+#(df2 is the sales value of each campaign type)
+df1 <- df %>%
+  group_by(campaign_type) %>%
+  count(product_id) %>%
+  summarise(total_products= sum(n))
+
+df1 %>% ggplot(aes(x= campaign_type,y=total_products)) +
+  geom_segment( aes(x= campaign_type,xend= campaign_type, y=0, yend= total_products, color= "Orange"))+
+  geom_point(color= 'Orange', size = 3) + 
+  scale_y_continuous(trans= 'log2',name = "Number of products") +
+  scale_x_discrete(name= "Campaign Type")+
+  labs( title = "Number of products in each campaign type",
+        subtitle = "This graph shows the number of product is applied in each campaign type",
+       caption = "http://https://github.com/bradleyboehmke/completejourney")
+
+
+df2<- df %>%
+  group_by(campaign_type) %>%
+summarise(total_sales_department= sum(sales_value))
+```
+
+
+
+<br>
+
+## Observation 3: Where are we serving it?
+
+0 & 7 are the top display location for Campaign's A & B. We recommend that Regork rotate the products through display locations 0 and 7.
+
+```{r Defining Data & Variables, echo = FALSE, message= FALSE}
+plot_data <- promotions %>% 
+    inner_join(products, by = "product_id") %>% 
+    inner_join(coupons, by = "product_id") %>% 
+    inner_join(campaign_descriptions, by = "campaign_id") %>%
+    select(campaign_type, display_location, product_id) %>% 
+    group_by(campaign_type, display_location) %>% 
+    summarize(distinct = n_distinct(product_id)) %>% 
+    arrange(campaign_type, desc(distinct))
+
+location_plot1 <- NA
+location_plot2 <- NA
+```
+
+```{r Create the Function, echo = false}
+# This function intakes the campaign type (ex: 'Type A') and outputs two ranked graphs regarding location counts by distinct product id
+
+campaign_locations <- function(campaign_tp, messages = TRUE){
+  
+    
+  location_plot1 <<- plot_data %>%
+    filter(campaign_type == campaign_tp) %>% 
+    ggplot(aes(x = reorder(display_location, -distinct), 
+                y = distinct,
+               fill = reorder(display_location, -distinct))) + 
+      geom_bar(stat = "identity", show.legend = FALSE) +
+      scale_y_continuous() +
+      scale_fill_grey() +
+      xlab("Display Locations") +
+      ylab("Distinct Product Count") +
+      labs( title = paste("# of unique products per display location"),
+            subtitle = paste("For", campaign_tp))
+    
+  location_plot2 <<- plot_data %>% 
+    filter(campaign_type == campaign_tp) %>% 
+    ggplot(aes(x = distinct, 
+               y = reorder(display_location, distinct),
+               col = -distinct)) + 
+      geom_point(show.legend = FALSE, size = 5) +
+      scale_fill_distiller(type = "seq", palette = "Blues") +      
+      xlab("Distinct Product Count") +
+      ylab("Display Location") +
+      labs( title = paste("# of unique products per display location"),
+            subtitle = paste("For", campaign_tp))
+  
+  message("Function complete")
+}  
+
+```
+
+```{r Run the Function, messages = FALSE}
+# Running the 'campgain_locations()' function and displaying outputs
+cmpgns <- c("Type A","Type B","Type C")
+for(i in cmpgns){
+  campaign_locations(i)
+  print(location_plot1)
+  print(location_plot2)
+  rm(location_plot1)
+  rm(location_plot2)
+}
+
+rm(cmpgns)
+rm(i)
+rm(plot_data)
+```

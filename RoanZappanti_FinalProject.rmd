@@ -1,0 +1,529 @@
+---
+title: "Group 22 Project"
+date: " `r Sys.Date()`"
+output: html_notebook
+---
+Retaining Customers for Regork <br>
+Class: Data Mining (4080-001) <br>
+Author: Roan Zappanti
+<br><br>
+
+
+
+#  Lab Sections {.tabset .tabset-pills}
+
+
+## Prerequities
+```{r Global-Setup, setup, include = TRUE}
+knitr::opts_chunk$set(
+  fig.width = 6, fig.height = 6,
+  warning = FALSE, error = FALSE, message = FALSE,
+  include = TRUE, echo = TRUE, strip.white = TRUE, highlight = TRUE,
+  results = 'hold'
+)
+```
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(RColorBrewer)
+library(vip)
+library(kernlab)
+library(baguette)
+library(pdp)
+library(gridExtra)
+
+path <- here::here("Data","customer_retention.csv")
+data_tibble <- read_csv(path)
+data <- as.data.frame(data_tibble)
+
+```
+
+
+## Introduction  
+
+**The Problem**: Retention, retention, retention! It's all everyone talks about these days, and for good reason. Regork, working in telecommunications, has noticed an uptick in customer churn. In order to increase retention (and therefore revenue), this analysis looks at the types of customers likely to stay with the company, important features to those customers, and losses based on predicted customers to churn. While this serves as a start to Regork's machine learning models for retention, it sets a great precedent for continual and marginal improvement and company retention, revenue, and profit.  
+
+<br>
+
+**Addressing Retention**: 
+In order to properly understand retention, this analysis:
+
+- Identifies trends/relationships among customer information and their churn
+- Employs basic logistic regression, regularized + tuned logistic regression, and decision tree modeling to predict future customers that will churn. 
+- Chooses the best-performing model and tests against provided data
+- Develop an action plan based on important features determined, customers identified, and potential lost revenue. 
+
+<br>
+
+**TLDR**: 
+After employing the decision tree model to data provided from Regork, the following action plan is recommended based on predicted lost revenue of customer churn during the next business period:
+
+1. **Tenure** $96,000 (60%): Offer lower rates and incentives for customers who stay with Regork. Not only will this incentivzie the customer's short term interest in staying another term, but it will also increase the customer's chance of staying in the long term.
+2. **Contract** $32,240 (20%): Incentivize customers with shorter-term contracts to switch to longer-term contracts with additional discounts
+3. **Price** $32,240 (20%): Lower the overall price of customers predicted to leave for their current and next term, no matter their term tpe or 
+
+
+## Exploratory Data Analysis
+
+#### Cleaning the Data 
+
+```{r Cleaning_Data} 
+glimpse(data)
+
+#Any empty rows or columns? Nope
+data <- data[rowSums(is.na(data)) != ncol(data), ]
+data <- data[ , colSums(is.na(data)) != nrow(data)]     
+
+#It looks like Total Charges is the only column with NA values.
+data[!complete.cases(data),]
+
+#Let's replace those with zeroes
+data <- replace(data,is.na(data),0)
+
+#Lets also turn Status into a factor, since it will be used in modeling
+data$Status <- as.factor(data$Status)
+
+#Finally, let's replace "No internet service" and "No phone service" with "No"
+data[data == "No internet service"] <- "No"
+data[data == "No phone service"] <- "No"
+
+```
+
+What is the baseline percent of status, what are the counts of status?
+```{r Status_Variable}
+data %>% select(Status) %>% 
+  mutate(Current_Num = ifelse(Status == "Current",1,0),
+         Left_Num = ifelse(Status == "Left",1,0)) %>% 
+  summarize(Current_ct = sum(Current_Num),
+            Left_ct = sum(Left_Num),
+            Churn_Percent = sum(Left_Num)/sum(Current_Num))
+```
+<br><br>
+
+#### Analyzing the Data 
+
+Notice below: Relationships exist between multiple numeric variables and status. It seems that churn rates are higher during earlier periods of tenure. Additionally, a large spike of current customers appears at a lower monthly charge. Total charges (correlated to monthly charge and tenure) also sees higher retention in lower total charges. 
+```{r NumbericVariables}
+# Looking at numeric columns
+data %>% select_if(is.numeric) %>% 
+  summary()
+
+numeric_var_names <- data %>% select_if(is.numeric) %>% colnames()
+numeric_var_names[5] <- "Status"
+
+
+#Viewing relationships between numeric variables and status
+data %>% 
+  select(all_of(numeric_var_names)) %>%
+  select(-data$SeniorCitizen) %>% 
+    GGally::ggpairs(progress = FALSE)
+
+```
+
+#### Qualitative Data Values (Post-Cleaning) 
+
+```{r QualitativeVariables}
+
+#Lets check the unique values in each character column
+data %>% select_if(is.character) %>% 
+  sapply(function(x) unique(x))
+```
+```{r Demographic_Vars}
+#Split qualitative variable names into service and demographic lists for later use against status and each other.
+Demographic_vars <- c("Gender","Partner","Dependents","SeniorCitizen")
+Service_Vars <- colnames(data %>% select_if(is.character) %>% select(-any_of(Demographic_vars)))
+
+```
+
+## Modeling Code
+
+### Logistic Regression
+```{r Logistic_Regression_CV}
+# create train/test split data for models
+set.seed(123)  # for reproducibility
+
+split  <- initial_split(data, prop = 0.7)
+data_train  <- training(split)
+data_test   <- testing(split)
+kfold <- vfold_cv(data_train, v = 5)
+
+
+# train model via cross validation
+lr_mod <- logistic_reg()
+results <- fit_resamples(lr_mod, Status ~ ., kfold)
+
+# Check out the cross-validated ROC-AUCs and their average using the training data
+collect_metrics(results, summarize = FALSE) %>% filter(.metric == "roc_auc")
+collect_metrics(results) %>% filter(.metric == "roc_auc")
+
+```
+
+```{r Logistic_Regression_FinalModel}
+
+# retrain the model across the entire training data
+final_fit_lr <- logistic_reg() %>%
+  fit(Status ~ ., data = data_train)
+
+# Creating tests against test data.
+final_fit_lr %>%
+  predict(data_train) %>%
+  bind_cols(data_train %>% select(Status)) %>%
+  conf_mat(truth = Status, estimate = .pred_class)
+
+log_regression_auc_plot <-final_fit_lr %>%
+  predict(data_train, type = "prob") %>%
+  mutate(truth = data_train$Status) %>% 
+  roc_curve(truth, .pred_Current) %>% 
+  autoplot()
+
+log_regression_auc_plot
+
+log_regression_conf_matrix <- final_fit_lr %>%
+  predict(data_train) %>%
+  mutate(truth = data_train$Status) %>% 
+  conf_mat(truth, .pred_class)
+
+log_regression_conf_matrix
+
+
+log_regression_auc <- final_fit_lr %>%
+  predict(data_train, type = "prob") %>%
+  mutate(truth = data_train$Status) %>% 
+  roc_auc(truth, .pred_Current)
+   
+log_regression_auc
+
+```
+Testing against the test data for the first time, the final logistic regression predicts that individuals will stay with the company with 84% accuracy. Additionally, Tenure and contract type serve as crucial metrics for predicting the churn of a customer based on the logistic regression model. 
+
+```{r Important_Logistic_Regression_Vars}
+log_regression_vip <- vip(final_fit_lr$fit, num_features = 20)
+
+log_regression_vip
+```
+
+
+
+### Regularized Logistic Regression
+This is similar to above, but with regularization variables that need to be tuned with a recipe and normalized. This is better than basic logistic regression because it:
+- No longer assumes a linear relationship
+- Keeps multicolinnearity in mind, which has already been identified in the data
+
+
+```{r Regularized_Classification_Model}
+set.seed(123)
+# Step 1: create ridge model object
+reg_mod <- logistic_reg(penalty = tune(), mixture = tune()) %>%
+   set_engine("glmnet") %>%
+   set_mode("classification")
+
+# Step 2: Create a tuning grid
+reg_grid <- grid_regular(mixture(), penalty(), levels = 5)
+
+# Step 3: create model & preprocessing recipe
+model_recipe <- recipe(Status ~ ., data = data_train) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_YeoJohnson(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors())
+
+# Step: Resampling of data
+kfold2 <- vfold_cv(data_train, v = 5, strata = "Status")
+
+# Step 4: create a tuned workflow object to combine the recipe & model
+tuning_results1 <- workflow() %>%
+   add_recipe(model_recipe) %>%
+   add_model(reg_mod) %>% 
+   tune_grid(resamples = kfold2, grid = reg_grid)
+
+tuning_results1 %>%
+   show_best(metric = "roc_auc")
+
+```
+```{r Regularized_Classification_Retuning}
+# Based on the results, re-tune with new parameters
+
+# Create a tuning grid
+reg_grid2 <- grid_regular(mixture(range = c(0,0.5)), penalty(range = c(0,0.003)), levels = 5)
+
+# Create model & preprocessing recipe
+model_recipe2 <- recipe(Status ~ ., data = data_train) %>%
+  step_normalize(all_numeric_predictors()) %>% 
+  step_YeoJohnson(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors())
+
+# Step 4: create a tuned workflow object to combine the recipe & model
+tuning_results2 <- workflow() %>%
+   add_recipe(model_recipe2) %>%
+   add_model(reg_mod) %>% 
+  tune_grid(resamples = kfold2, grid = reg_grid2)
+
+tuning_results2 %>%
+   show_best(metric = "roc_auc")
+
+tuning_results2 %>% 
+  select_best(metric = "roc_auc")
+
+best_hyperparameters_reg <- select_best(tuning_results2, metric = "roc_auc")
+```
+
+
+```{r RegularizedRegression_Final_Workflow}
+# Step 5: Create a finalized workflow
+final_wf_reg <- workflow() %>%
+   add_recipe(model_recipe2) %>%
+   add_model(reg_mod) %>% 
+   finalize_workflow(best_hyperparameters_reg)
+
+# Step 6: Fit final model on all training data
+final_fit_reg <- final_wf_reg %>%
+   fit(data = data_train)
+
+# Step 7: Assess top 20 most influential features
+reg_regression_vip <- final_fit_reg %>%
+   extract_fit_parsnip() %>%
+   vip(num_features = 20, geom = "point")
+
+reg_regression_vip
+
+# Step 8: Test the final, fitted workflow against test data and output the result.
+reg_regression_auc_plot <- final_fit_reg %>% 
+  predict(data_train, type = "prob") %>%
+  mutate(truth = data_train$Status) %>% 
+  roc_curve(truth, .pred_Current) %>% 
+  autoplot()
+
+reg_regression_auc_plot
+
+reg_regression_conf_matrix <- final_fit_reg %>%
+  predict(data_train) %>%
+  bind_cols(data_train %>% select(Status)) %>%
+  conf_mat(truth = Status, estimate = .pred_class)
+
+reg_regression_conf_matrix
+
+reg_regression_auc <- final_fit_reg %>% 
+  predict(data_train, type = "prob") %>%
+  mutate(truth = data_train$Status) %>% 
+  roc_auc(truth, .pred_Current)
+
+reg_regression_auc
+```
+
+### Decision Trees
+
+
+```{r Modified and tuned decision tree}
+# Create a modified decision tree
+dt_mod <- decision_tree(
+  mode = "classification",
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+  ) %>%
+  set_engine("rpart")
+
+# Create model recipe
+dt_recipe <- recipe(Status ~ ., data = data_train)
+
+# create the hyperparameter grid
+dt_hyper_grid <- grid_regular(
+  cost_complexity(),
+  tree_depth(),
+  min_n(),
+  levels = 5
+  )
+
+# train model across the hyper parameter grid
+dt_results <- tune_grid(dt_mod, dt_recipe, resamples = kfold, grid = dt_hyper_grid)
+
+# get best results
+show_best(dt_results, metric = "roc_auc", n = 5)
+best_dt_params <- select_best(dt_results, metric = "roc_auc")
+best_dt_params
+```
+
+```{r Final_Decision_Tree}
+
+# put together final workflow
+dt_final_wf <- workflow() %>%
+  add_recipe(dt_recipe) %>%
+  add_model(dt_mod) %>%
+  finalize_workflow(best_dt_params)
+
+# fit final workflow across entire training data
+dt_final_fit <- dt_final_wf %>%
+  fit(data = data_train)
+
+# Test decision tree across test data and output
+decision_tree_auc <- dt_final_fit %>% 
+  predict(data_train, type = "prob") %>% 
+  mutate(truth = data_train$Status) %>% 
+  roc_auc(truth, .pred_Current)
+
+decision_tree_auc
+
+decision_tree_conf_matrix <- dt_final_fit %>% 
+  predict(data_train) %>% 
+  mutate(truth = data_train$Status) %>% 
+  conf_mat(truth = truth, estimate = .pred_class)
+
+decision_tree_conf_matrix
+
+decision_tree_auc_plot <- dt_final_fit %>% 
+  predict(data_train, type = "prob") %>% 
+  mutate(truth = data_train$Status) %>%  
+  roc_curve(truth, .pred_Current) %>% 
+  autoplot()
+
+decision_tree_auc_plot
+```
+```{r Decision_Tree_Final_PDP_FeatureImportance}
+# plot feature importance
+decision_tree_vip <- dt_final_fit %>%
+  extract_fit_parsnip() %>%
+  vip(20)
+
+decision_tree_vip
+```
+## Modeling Output Analysis
+
+*Note*: All graphs in the following analysis are presented in the following model order
+  
+  1. Basic Logistic Regression
+  2. Regularized and Tuned Logistic Regression
+  3. Tuned Decision Tree Model 
+
+
+<br>
+
+#### Confusion Matrices:
+
+Taking a look at the confusion matrices, we can see that the regularized regression model chose to predict EACH customer to stay, with nobody leaving. After re-testing multiple times, this really is the outcome of the model. Based on this information, we can conclude that the Regularized Regression model will not serve our interests at Regork.
+
+```{r}
+log_regression_conf_matrix
+reg_regression_conf_matrix
+decision_tree_conf_matrix
+```
+<br><br>
+
+#### Area Under the Curve:
+This is where the models get interesting. Notice that, between the two remaining models, the decision tree outperforms the basic logistic regression by multiple points. We realize that the decision tree serves as our chosen model, for it captures the complex relationships (which exist as per EDA in beginning of this paper) affecting Status. 
+
+```{r}
+log_regression_auc
+reg_regression_auc
+decision_tree_auc
+```
+
+<br><br>
+
+#### AUC Curves
+Finally, a quick visualization of the curves complementing each AUC metric.
+```{r}
+grid.arrange(log_regression_auc_plot, reg_regression_auc_plot, decision_tree_auc_plot, ncol = 3)
+```
+<br>
+
+#### Best Model and Important Variables
+
+Since we are using the decision tree model, let's look at the important variables identified through that model and compare it to the basic Logistic Regression VIP:
+
+```{r}
+grid.arrange(decision_tree_vip, log_regression_vip, ncol = 2)
+```
+Our two best models both note that Tenure and Contract are extremely important features to predict customer churn. Additionally, the logistic regression model notes that a two-year contract has a larger effect on customer retention than a one-year contract. From this, we learn that longer tenure and two-year contracts increase incentives to stay with Regork. 
+<br><br>
+
+Now honing into the decision tree VIP only:
+```{r}
+decision_tree_vip
+```
+After contract and tenure, money serves as the main factor affecting customer retention. This makes sense, as telecommunications serves as a basic commodity in the market, making price an extremely important factor in choosing a service company. 
+
+But how does this model perform against unseen data? Take a look at the comparison between training AUC and testing AUC below (in order).
+```{r}
+dt_final_fit %>% 
+  predict(data_train, type = "prob") %>% 
+  mutate(truth = data_train$Status) %>% 
+  roc_auc(truth, .pred_Current)
+
+dt_final_fit %>% 
+  predict(data_test, type = "prob") %>% 
+  mutate(truth = data_test$Status) %>% 
+  roc_auc(truth, .pred_Current)
+```
+**Survey says**: A slightly lower accuracy, but still acceptable for Regork's purposes. 
+
+
+## Business Analysis and Conclusion
+
+#### Important Business Factors:
+Based on the decision tree's analysis, the top three factors to focus on are:
+
+1. *Tenure*: The longer Regork retains a customer, the lower their chance of churn
+2. *Contract*: Longer contracts = lower churn
+3. *Total Spend*: Price plays an important role in customer retention regarding the commodity of telecommunications. 
+
+<br>
+
+#### Predicted Churn and Losses
+Before creating an action plan to retain customers, let's figure out the potential losses related customers who are predicted to leave.
+```{r}
+test_prediction <- as.data.frame(predict(dt_final_fit, data_test))
+
+churn_customers <- data_test %>% 
+  mutate(prediction = test_prediction$.pred_class) %>% 
+  filter(Status == "Current", prediction == "Left")
+
+head(churn_customers %>% select(Status, prediction))
+```
+Notice we're only looking at customers still with the company who are predicted to leave. Below shows the predicted worth of these customers' monthly revenue.
+
+
+```{r}
+churn_customers %>% 
+  summarize(potential_losses = sum(MonthlyCharges),
+            avg_loss_per_customer = sum(MonthlyCharges)/n())
+
+```
+
+Oof. It looks like Regork stands to **lose** around **$16,800** per month due to customer churn. That's an estimated **\$201,600 per** year... Just on the test data! Finally, it seems that each customer brings in around $75 per month.
+<br><br>
+
+#### Solution
+
+We know that customers bring in an average of \$75 per month, and Regork requires a 20% top-line profit to fulfill all expenses (and other programs) and still make a bottom line profit. This leaves us with ~\$60 to spend per customer on a new promotional program. 
+
+Our decision tree model indicated that Tenure, Contract length, and Total Spend amount serve as important retention components for a customer. In order to keep retain customers, consider the following based on a budget of \$201,600 per year:
+
+1. **Tenure** $96,000 (60%): Offer lower rates and incentives for customers who stay with Regork. Not only will this incentivzie the customer's short term interest in staying another term, but it will also increase the customer's chance of staying in the long term.
+2. **Contract** $32,240 (20%): Incentivize customers with shorter-term contracts to switch to longer-term contracts with additional discounts
+3. **Price** $32,220 (20%): Lower the overall price of customers predicted to leave for their current and next term, no matter their term tpe or 
+3. **Most Important** ($20): Buy your analyst tacos for doing this much analysis.
+
+<br><br>
+
+#### Limitations
+
+- Small dataset. Great for training a model, but not great for companywide analysis
+- Unkown data source. Retrieved from a third party, with no way to validate data
+- No additional data to test model against
+- Unable to "reality-check" action plan against current business conditions.
+- Models could use additional tuning (especially the regularized logistic regression)
+
+## Conclusion Statement:
+
+After testing Logistic Regression, Regularized Logistic Regression, and Decision Tree Models, the Decision Tree Model provided the best accuracy with an AUC of 0.85 on training data and 0.83 on test data.
+
+Based on the results from the decision tree, Regork stands to lose \$16,800 per month, \$201,600 per year, and \$75 per customer from current customers predicted to churn. Additionally, the model noted that Tenure, Contract Type, and Total Cost serve as the three most important features in determining customer retention.
+
+In order to reduce customer churn and later losses, the following action plan is recommended:
+
+1. **Tenure** $96,000 (60%): Offer lower rates and incentives for customers who stay with Regork. Not only will this incentivzie the customer's short term interest in staying another term, but it will also increase the customer's chance of staying in the long term.
+2. **Contract** $32,240 (20%): Incentivize customers with shorter-term contracts to switch to longer-term contracts with additional discounts
+3. **Price** $32,240 (20%): Lower the overall price of customers predicted to leave for their current and next term, no matter their term length or contract type.
+<br><br>
+
+
